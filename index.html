@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Самый быстрый движок для Qwen3.8-Flash-Next на 2×RTX 5090</title>
+<style>
+  :root { --fg:#1a1d21; --mut:#5b6570; --line:#dfe3e8; --bg:#fff; --accent:#0a7a5c; --warn:#b4400f; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:2rem 1rem 4rem; background:var(--bg); color:var(--fg);
+         font:16px/1.55 -apple-system,Segoe UI,Roboto,Cantarell,Helvetica,Arial,sans-serif; }
+  main { max-width:60rem; margin:0 auto; }
+  h1 { font-size:1.7rem; line-height:1.25; margin:0 0 .5rem; }
+  h2 { font-size:1.2rem; margin:2.2rem 0 .6rem; padding-top:1.1rem; border-top:1px solid var(--line); }
+  h3 { font-size:1rem; margin:1.4rem 0 .4rem; color:var(--mut); }
+  p, li { max-width:70ch; }
+  .meta { color:var(--mut); font-size:.9rem; margin-bottom:1.5rem; }
+  .verdict { border-left:4px solid var(--accent); background:#f4faf8; padding:.9rem 1.1rem; margin:1.2rem 0; }
+  .verdict strong { color:var(--accent); }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; margin:.6rem 0 1rem; font-size:.92rem; }
+  th, td { border:1px solid var(--line); padding:.45rem .6rem; text-align:left; vertical-align:top; }
+  th { background:#f6f7f9; font-weight:600; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  tr.hl td { background:#fff6ef; }
+  code { background:#f2f3f5; padding:.1rem .3rem; border-radius:3px; font-size:.88em; }
+  a { color:#0b62a4; }
+  .warn { color:var(--warn); font-weight:600; }
+  ol li, ul li { margin:.35rem 0; }
+  .src a { display:inline-block; margin-right:.2rem; }
+  footer { margin-top:2.5rem; padding-top:1rem; border-top:1px solid var(--line); color:var(--mut); font-size:.9rem; }
+  @media print { body { padding:0; font-size:11pt; } a { color:inherit; text-decoration:none; } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Самый быстрый движок для Qwen3.8-Flash-Next на xeon (2×RTX 5090)</h1>
+<p class="meta">Отчёт от 12 ноября 2026 г. Все скорости взяты из опубликованных источников
+(Basalt docs / community benchmarks, GitHub, Hugging Face, vLLM recipes, обзоры).
+На этой машине ничего не замерялось; аппаратная часть собрана командами
+<code>nvidia-smi</code>, <code>lscpu</code>, <code>free</code>, <code>df</code> 12.11.2026.</p>
+
+<div class="verdict">
+<strong>Вывод:</strong> движок — <strong>Basalt</strong> (форк Strata), он уже стоит и работает.
+Ни один «универсальный» движок не даёт на этом железе ничего близкого: <strong>461 tok/s</strong>
+против 40–180 tok/s у llama.cpp / Strata на одной карте; vLLM и SGLang для 64 ГБ VRAM официально
+не поддерживают модель. Реальный выбор — не движок, а <strong>топология PCIe второй карты</strong>
+и <strong>квант внутри Basalt</strong>: вместе это ~550–600 tok/s вместо текущих 461.
+</div>
+
+<h2>1. Железо и софт (замерено на машине)</h2>
+<div class="scroll"><table>
+<tr><th>Параметр</th><th>Значение</th></tr>
+<tr><td>GPU</td><td>2× NVIDIA GeForce RTX 5090 32 ГБ (GB202, sm_120), лимит 500 Вт из 575 Вт</td></tr>
+<tr><td>PCIe</td><td>GPU0: Gen5 ×16 (h2d 25.9 ГБ/с) · <span class="warn">GPU1: Gen4 ×4 (h2d 7.2 ГБ/с)</span></td></tr>
+<tr><td>Топология</td><td><code>nvidia-smi topo -m</code> → PHB, один NUMA-узел</td></tr>
+<tr><td>CPU</td><td>Intel i9-13900F, 24 ядра / 32 потока, AVX2 + AVX-VNNI, <strong>без AVX-512/AMX</strong></td></tr>
+<tr><td>RAM</td><td>123 ГиБ, чтение 79.5 ГБ/с (по вашей строке в бенчмарке)</td></tr>
+<tr><td>ОС / стек</td><td>Ubuntu 26.04.1, kernel 7.0.0-38, driver 615.71.09, CUDA 13.4</td></tr>
+<tr><td>Диск</td><td><code>/data/c</code> 3 Тб (596 ГБ свободно), <code>/data/temp</code> 1.9 Тб свободно</td></tr>
+<tr><td>Установлено</td><td><code>basalt</code> (main, commit <code>3cb927da</code> от 11.11.2026; свежий релиз v0.3.2 от 08.11), <code>llama.cpp</code> 0.9.0-dev build 12292 (<code>af6b5243d</code>), старый Strata в <code>/neuro/_bak/strata-2026-10-22</code></td></tr>
+<tr><td>Не установлено</td><td>vLLM, SGLang, KTransformers, Ollama, LM Studio, Docker</td></tr>
+<tr><td>Запущено сейчас</td><td><code>basalt serve Qwen3.8-FN-NVFP4.basalt --gpu 0,1 --kv int8 --max-context 262144 --expert-cache auto --prefill auto --resident-experts --pool-affinity auto --prompt-cache 12 --conversation-cache-mib 20480 --conversation-cache-slots 10 --vision --grammar on</code> (+ <code>spec: 3</code> в конфиге); обе карты заняты (~31.5 ГБ, 88–92 % утилизации)</td></tr>
+</table></div>
+
+<h2>2. Модель</h2>
+<p><a href="https://huggingface.co/Qwen/Qwen3.8-Flash-Next">Qwen/Qwen3.8-Flash-Next</a>,
+архитектура <code>Qwen4ExpForConditionalGeneration</code> (<code>model_type: qwen4_exp</code>):</p>
+<ul>
+  <li>125 млрд параметров основной модели + 51 млрд N-gram/PLE-таблица + 4 млрд MTP-модуль;
+      <strong>активируется ~6 млрд на токен</strong> (10 экспертов из 512, <code>moe_intermediate_size: 640</code>).</li>
+  <li>48 слоёв, <code>full_attention_interval: 4</code> — три из четырёх слоёв Gated DeltaNet
+      (линейное внимание), каждый четвёртый — Qwen Sparse Attention; 24 головы, 2 KV-головы, <code>head_dim: 256</code>.</li>
+  <li>Мультимодальность (vision-энкодер, 27 слоёв), контекст <strong>262 144</strong> нативно (1M через YaRN).</li>
+  <li>Размеры чекпойнтов: BF16 — 360 000 192 888 Б (335.28 ГиБ), FP8 — 185 523 317 458 Б (172.78 ГиБ).</li>
+</ul>
+<p>Практический смысл: «6B активных» не означает маленьких требований к памяти — эксперты и
+PLE-таблица должны где-то лежать, поэтому движки делятся на «для датацентра (4–8 карт по 141–288 ГБ)»
+и «со стримингом экспертов по RAM/SSD» (Strata, Basalt, llama.cpp).</p>
+
+<h2>3. Статус поддержки архитектуры <code>qwen4exp</code></h2>
+<div class="scroll"><table>
+<tr><th>Движок</th><th>Статус</th><th>Ссылка</th></tr>
+<tr><td><strong>Basalt</strong> (форк Strata, MIT, 940 ★)</td><td>целевая модель №1, заточен под sm_120</td>
+    <td><a href="https://github.com/jesdga95/basalt">репозиторий</a> · <a href="https://basalt.jgulfo.com">доки</a></td></tr>
+<tr><td><strong>Strata</strong> (MIT, 43 285 ★, релиз 0.2.13)</td><td>целевая модель №1, GGUF-паки, Windows/Linux/AMD/Arc/Mac/Strix Halo</td>
+    <td><a href="https://github.com/Niko1221/Strata">Niko1221/Strata</a></td></tr>
+<tr><td><strong>llama.cpp</strong></td><td>архитектура влита 27.08.2026 (PR #27742); кэш MoE-экспертов в RAM, MTP (#27836); открытые баги: мусор на sm_110 (#27763), livelock на HIP (#29149), <code>draft-mtp</code> + <code>--kv-unified</code> + <code>--parallel</code> (#30368), краш DFlash2 (#30887)</td>
+    <td><a href="https://github.com/ggml-org/llama.cpp/pull/27742">PR #27742</a></td></tr>
+<tr><td><strong>vLLM</strong></td><td>поддерживается, но минимум <strong>250 ГБ VRAM</strong> для FP8; TP2 на GB300, TEP8 на H200, 4×MI355X; pipeline parallelism нет (#64952); для RTX 5090/4090 — «No»</td>
+    <td><a href="https://recipes.vllm.ai/Qwen/Qwen3.8-Flash-Next">recipe</a></td></tr>
+<tr><td><strong>SGLang</strong></td><td>роадмап по модели есть, фокус GB300 / MI355X / Ascend NPU; потребительских 5090 в плане нет</td>
+    <td><a href="https://github.com/sgl-project/sglang/issues/38731">#38731</a></td></tr>
+<tr><td><strong>KTransformers</strong></td><td>поддержки <code>qwen4_exp</code> <span class="warn">нет</span> (только открытый запрос #2179); на 13900F нет AMX/AVX-512, на которых держится их CPU-путь</td>
+    <td><a href="https://github.com/kvcache-ai/ktransformers/issues/2179">#2179</a></td></tr>
+<tr><td>TensorRT-LLM, LMDeploy</td><td>архитектуры нет; BF16 335 ГиБ некуда класть на 64 ГБ VRAM</td><td>—</td></tr>
+<tr><td>MLX / oMLX / Slotstream</td><td>только Apple Silicon (1.8 tok/s на 16 ГБ Mac mini, 62.4 tok/s на 512 ГБ M3 Ultra)</td>
+    <td><a href="https://kingy.ai/blog/qwen3-8-flash-next-hardware-requirements-vram-vllm/">kingy.ai</a></td></tr>
+</table></div>
+
+<h2>4. Скорости из источников</h2>
+
+<h3>Basalt / Strata — community-таблица Basalt (холодный <code>basalt-bench --community</code>)</h3>
+<div class="scroll"><table>
+<tr><th>Конфигурация</th><th>Квант</th><th class="num">decode tok/s</th></tr>
+<tr class="hl"><td><strong>вы: 2×5090 (×16 + ×4), i9-13900F, 79.5 ГБ/с</strong></td><td>NVFP4</td><td class="num"><strong>461.3</strong></td></tr>
+<tr><td>2×5090 (обе 5.0 ×8), Ryzen 9 9900X, 75.7 ГБ/с</td><td>NVFP4</td><td class="num">553.6</td></tr>
+<tr><td>2×5090 500 Вт + 285K, Ultra 9 285K</td><td>IQ3_XXS</td><td class="num">564.5</td></tr>
+<tr><td>1×5090 575 Вт + 285K, Ultra 9 285K</td><td>IQ3_S</td><td class="num">376.1 / 374.8</td></tr>
+<tr><td>1×5090, Ryzen 7 9700X, PCIe 5.0 ×16, h2d 57.9</td><td>IQ3_S при 575 Вт / 489 Вт</td><td class="num">486.7 / 431.1</td></tr>
+<tr><td>1×RTX PRO 6000 Blackwell 96 ГБ, 285K</td><td>NVFP4-DQ8</td><td class="num">538.7</td></tr>
+<tr><td>2×5090 400 Вт + 5060 Ti 180 Вт (мейнтейнер), 9950X</td><td>NVFP4</td><td class="num">503.8 (prose 293.0, accept 64.7 %)</td></tr>
+<tr><td>1×RTX 5070 Ti 16 ГБ + 128 ГБ RAM, E5-2686 v4</td><td>NVFP4</td><td class="num">91.6</td></tr>
+<tr><td>Strata 0.1.29, 1×5090 + 64 ГБ RAM, 285K</td><td>IQ2_XS</td><td class="num">179.4 / 175.7 / 165.0 при 4K / 32K / 128K (prefill 4 270–5 779)</td></tr>
+</table></div>
+
+<h3>llama.cpp (mainline с <code>qwen4exp</code>)</h3>
+<div class="scroll"><table>
+<tr><th>Конфигурация</th><th>Квант</th><th class="num">decode tok/s</th></tr>
+<tr><td>1×RTX 5090 + 64 ГБ RAM</td><td>GGUF</td><td class="num"><strong>40</strong> (prompt ~50, 27 ГБ VRAM, 8 ГБ RAM)</td></tr>
+<tr><td>1×RTX 5090 + 128 ГБ RAM, контекст 15K</td><td>UD-Q2_K_XL (78.9 ГБ)</td><td class="num">43.3</td></tr>
+<tr><td>24 ГБ GPU + 64 ГБ RAM (оценка)</td><td>Q2_0 GSQ-RCO</td><td class="num">~22 (оценка, не замер)</td></tr>
+<tr><td>RTX 40/50, форк с MTP (<code>qwen4exp/mtp</code>)</td><td>MXFP4 + MTP</td><td class="num">30 → 60–80 после MTP</td></tr>
+<tr><td>RTX 5070 12 ГБ (сравнение из обзора)</td><td>IQ3_XXS</td><td class="num">Strata 49.7–57.9 = в 3.2–4.0× быстрее llama.cpp</td></tr>
+</table></div>
+
+<h3>vLLM (только датацентровые конфигурации)</h3>
+<div class="scroll"><table>
+<tr><th>Конфигурация</th><th>Вариант</th><th class="num">выход, tok/s</th></tr>
+<tr><td>4×MI355X, TEP8 (AITER)</td><td>MXFP4</td><td class="num">665 / 1831 (conc. 8 / 32), GSM8K 0.965</td></tr>
+<tr><td>4×GB300 TEP4, 8×H200 TEP8</td><td>FP8</td><td class="num">официально валидированные конфигурации</td></tr>
+<tr><td>2×GB300</td><td>FP8</td><td class="num">минимум по памяти: 250 ГБ VRAM суммарно</td></tr>
+<tr class="hl"><td><strong>RTX 5090 / RTX 4090</strong></td><td>FP8</td><td class="num"><strong>не поддерживается, чекпойнт не влезает</strong></td></tr>
+</table></div>
+
+<h2>5. Где на этой машине реальная скорость (по источникам)</h2>
+<ol>
+<li><strong>Вторая 5090 на PCIe 4.0 ×4 — главный рычаг.</strong> Движок прайсит <code>prompt split</code>
+и layer split «из each card's memory bandwidth, the probed link rates» и отключает часть механизмов
+на медленной паре карт; две одинаковые карты (5090+5090 = «alike», ±10 % по пропускной способности и
+VRAM) дополнительно получают layer split с перекрытием окон и раздел GDN между картами
+(<a href="https://github.com/jesdga95/basalt/blob/main/docs/configuration/gpus.md">docs/configuration/gpus.md</a>).
+Ориентир: <strong>461 → 553 tok/s</strong> на связке ×8+×8 со слабым CPU, то есть порядка <strong>+20 %</strong>
+за перестановку карты в полноценный ×8/×16 слот.</li>
+<li><strong>Квант внутри Basalt</strong> (размеры паков с
+<a href="https://huggingface.co/jesdga/Qwen3.8-Flash-Next-Basalt">jesdga/Qwen3.8-Flash-Next-Basalt</a>):
+<div class="scroll"><table>
+<tr><th>Пак</th><th class="num">Размер</th><th class="num">prose tok/s</th><th class="num">KLD</th><th class="num">top-1</th></tr>
+<tr><td>UD-IQ1_S</td><td class="num">70.4 ГБ</td><td class="num">— (самые быстрые, худшее качество)</td><td class="num">—</td><td class="num">—</td></tr>
+<tr><td>UD-IQ1_M</td><td class="num">72.0 ГБ</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+<tr><td>UD-IQ2_XS</td><td class="num">79.9 ГБ</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+<tr><td>UD-IQ3_XXS</td><td class="num">87.6 ГБ</td><td class="num">≈332–386</td><td class="num">~0.15</td><td class="num">~87 %</td></tr>
+<tr><td>UD-IQ3_S</td><td class="num">~93 ГБ</td><td class="num"><strong>341.1</strong></td><td class="num">0.1499</td><td class="num">87.54 %</td></tr>
+<tr class="hl"><td>NVFP4 (ваш)</td><td class="num">123.2 ГБ</td><td class="num"><strong>281.6</strong></td><td class="num">0.0614</td><td class="num">91.81 %</td></tr>
+<tr><td>NVFP4-DQ6_K</td><td class="num">131.7 ГБ</td><td class="num">+5.6…10.2 % к NVFP4</td><td class="num">ниже DQ8</td><td class="num">—</td></tr>
+<tr><td>NVFP4-DQ8</td><td class="num">132.4 ГБ</td><td class="num">медленнее DQ6_K</td><td class="num">ниже</td><td class="num">—</td></tr>
+<tr><td>UD-Q4_K_XL / Q5_K_XL / Q6_K_XL</td><td class="num">115.3 / 162.3 / 173.1 ГБ</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+<tr><td>Q8_0</td><td class="num">192.2 ГБ</td><td class="num"><strong>112.4</strong></td><td class="num">0.0197</td><td class="num">95.39 %</td></tr>
+</table></div>
+Перекрёстная проверка на одинаковых машинах: IQ3_XXS против NVFP4 — <strong>564.5 против 305.4</strong>
+(285K+5090) и <strong>188.6 против 96.1</strong> (14900T+RTX PRO 4000), то есть ×1.85.</li>
+<li><strong>Ваш NVFP4-пак — не текущий DQ6_K.</strong> Лежит <code>Qwen3.8-FN-NVFP4.basalt</code> (123.2 ГБ),
+в репозитории сейчас <code>Qwen3.8-FN-NVFP4-DQ6_K.basalt</code> (131.7 ГБ). 6-битные dense-проекции
+вместо 8-битных дают документированные <strong>+5.6…+10.2 %</strong> decode (prose 213.4 → 229.9,
+conversation 251.0 → 265.1, structured 420.4 → 463.5) и меньший KLD, чем у DQ8.</li>
+<li><strong>Флаги, которые касаются ваших конфигов:</strong> <code>--spec 3</code> при дефолте <strong>8</strong>
+(окно MTP-черновика); <code>--kv int8</code> документально <strong>lossless</strong> (ΔKLD +0.0000), а
+<code>k8v4</code> (+0.0056) и <code>q4_0</code> (+0.0093) уже «measurable» — дальше int8 идти не стоит;
+<code>--prefill auto</code> для NVFP4 читает чанками до 32 768 токенов, доля CPU
+<code>--prefill-cpu-share</code> 0.6 на качество не влияет (ΔKLD +0.0025 в пределах шума);
+FP4-тензорные ядра вместо MMQ ускоряют prefill на 17–19 % (64K: 8 201 против 10 126 tok/s).</li>
+<li><strong>Лимит питания:</strong> 500 Вт из 575 доступных на обеих картах. В тех же рядах при 575 Вт
+против 489 Вт: IQ3_S 486.7 против 431.1 (<strong>+12.9 %</strong>).</li>
+</ol>
+<p><strong>Ожидаемый эффект от пунктов 1–3:</strong> ~550–600 tok/s в холодном community-бенчмарке
+вместо 461. В длинных агентских сессиях на 262K (по вашему <code>UPDATE.md</code> — 70–103 tok/s)
+прирост заметно меньше: там доминируют объём контекста и elastic KV, а не пропускная способность
+экспертов.</p>
+
+<h2>6. Когда Basalt не оптимум</h2>
+<ul>
+<li>Нужен вариант модели, для которого есть только GGUF (например, <code>Qwen3.8-Flash-Next-AtomicChat</code>,
+который у вас лежит, или сторонние abliterated-сборки) → <code>llama.cpp</code> build 12292 из
+<code>/neuro/llamacpp</code> с <code>--n-cpu-moe</code> / <code>--override-tensor</code> и
+<code>--spec-type draft-mtp</code>; ожидайте 40–80 tok/s, а не 400.</li>
+<li>Следить за <a href="https://github.com/vllm-project/vllm/issues/64952">vLLM #64952</a>
+(pipeline parallel для Qwen4Exp) и RFC «Incremental MoE Expert Offloading — GPU Cache + Async Pipeline»:
+если допилят до consumer-карт, расклад изменится. На сегодня это 4–8 карт по 141–288 ГБ.</li>
+<li>Strata (апстрим) — если понадобится экосистема GGUF-паков и обходные пути (AMD/Arc/Mac), но
+на 2×5090 Basalt является его Blackwell-форком: +13 % decode в 0.2.0 (prose 297 → ~330–337) и более
+свежие правки decode в 0.3.x.</li>
+</ul>
+
+<h2>7. Источники</h2>
+<ul class="src">
+<li><a href="https://github.com/jesdga95/basalt">Basalt: репозиторий</a> ·
+    <a href="https://basalt.jgulfo.com/community/">community-бенчмарки</a> ·
+    <a href="https://github.com/jesdga95/basalt/blob/main/docs/community/benchmarks.json">benchmarks.json</a> ·
+    <a href="https://github.com/jesdga95/basalt/blob/main/docs/configuration/gpus.md">configuration/gpus.md</a> ·
+    <a href="https://github.com/jesdga95/basalt/blob/main/docs/precision/qwen38-flash-next.md">precision/qwen38-flash-next.md</a> ·
+    <a href="https://github.com/jesdga95/basalt/blob/main/docs/models/qwen38-flash-next.md">models/qwen38-flash-next.md</a></li>
+<li><a href="https://github.com/Niko1221/Strata">Strata</a> ·
+    <a href="https://github.com/Niko1221/Strata/blob/main/bench/results/2026-09-30-community-rtx-5090/README.md">бенчмарк RTX 5090 (IQ2_XS)</a> ·
+    <a href="https://github.com/Niko1221/Strata/blob/main/docs/COMMUNITY_BENCHMARKS.md">COMMUNITY_BENCHMARKS.md</a></li>
+<li><a href="https://recipes.vllm.ai/Qwen/Qwen3.8-Flash-Next">vLLM recipe для Qwen3.8-Flash-Next</a></li>
+<li><a href="https://kingy.ai/blog/qwen3-8-flash-next-hardware-requirements-vram-vllm/">Kingy AI: VRAM, FP8 и vLLM</a></li>
+<li><a href="https://www.reddit.com/r/LocalLLaMA/comments/1wpe83z/">r/LocalLLaMA: Flash-Next на 5090 + 64 ГБ в llama.cpp (40 tok/s)</a></li>
+<li><a href="https://xhinker.medium.com/i-doubled-my-qwen3-8-flash-next-speed-on-rtx-gpus-and-llama-cpp-still-wont-ship-the-feature-622d4fb6a4ea">xhinker: удвоение скорости llama.cpp на RTX через MTP</a></li>
+<li><a href="https://willitrunai.com/models/qwen-3.8-flash-next">willitrunai: сравнение с llama.cpp</a></li>
+<li><a href="https://github.com/kvcache-ai/ktransformers/issues/2179">KTransformers #2179</a> ·
+    <a href="https://github.com/sgl-project/sglang/issues/38731">SGLang #38731</a> ·
+    <a href="https://github.com/ggml-org/llama.cpp/pull/27742">llama.cpp PR #27742</a></li>
+<li><a href="https://huggingface.co/Qwen/Qwen3.8-Flash-Next">Qwen/Qwen3.8-Flash-Next</a> ·
+    <a href="https://huggingface.co/jesdga/Qwen3.8-Flash-Next-Basalt">jesdga/Qwen3.8-Flash-Next-Basalt (паки)</a></li>
+</ul>
+
+<h2>8. Что не проверялось</h2>
+<ul>
+<li>Скорости на этой машине не замерялись: цифры из чужих прогонов того же движка, и «+20 % от
+перестановки карты» — это сравнение 461 (×16+×4) с 553 (×8+×8), а не результат на вашем слоте.</li>
+<li>Почему ваш <code>Qwen3.8-FN-NVFP4.basalt</code> (123.2 ГБ) меньше текущего <code>NVFP4-DQ6_K</code>
+(131.7 ГБ) — метаданные пака не разбирались.</li>
+<li>Для IQ1_S, IQ1_M, IQ2_XS, IQ4_XS, Q5_K_XL, Q6_K_XL в доках Basalt нет чисел prose/KLD —
+их скорости в таблице экстраполированы с других карт.</li>
+<li>Браузер через devtools не поднимался: Chrome на <code>172.16.0.11:9222</code> порт держит, но
+DevTools-хендшейк не отвечает; страницы читались HTTP-запросами (GitHub API, raw-файлы, vLLM recipes,
+HF API, поисковый индекс).</li>
+</ul>
+
+<footer>Текстовая версия: <code>qwen3.8-flash-next-engines.md</code> в этой же папке.</footer>
+
+</main>
+</body>
+</html>
